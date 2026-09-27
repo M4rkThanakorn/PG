@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POG Comparison Tool</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+</head>
+<body class="bg-slate-100 min-h-screen p-4 md:p-8">
+  <div class="max-w-5xl mx-auto bg-white p-6 md:p-8 rounded-2xl shadow-lg">
+    <h1 class="text-2xl font-bold text-slate-800 mb-2">📊 ระบบเปรียบเทียบ Planogram (POG)</h1>
+    <p class="text-slate-500 mb-6 text-sm">วางไฟล์ PDF ผังเก่าและผังใหม่ ระบบจะประมวลผล แยกรายการ NEW / DELIST / ปรับ Facing ให้อัตโนมัติ</p>
+
+    <!-- Drop Zones -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div id="dropOld" class="border-2 border-dashed border-blue-300 bg-blue-50/50 p-6 rounded-xl text-center cursor-pointer hover:bg-blue-50 transition">
+        <div class="text-3xl mb-2">📁</div>
+        <p class="font-bold text-blue-800 mb-1">วางไฟล์ PDF (ผังเก่า)</p>
+        <span id="labelOld" class="text-xs text-slate-500">หรือคลิกเพื่อเลือกไฟล์</span>
+        <input type="file" id="fileOld" accept=".pdf" class="hidden">
+      </div>
+
+      <div id="dropNew" class="border-2 border-dashed border-emerald-300 bg-emerald-50/50 p-6 rounded-xl text-center cursor-pointer hover:bg-emerald-50 transition">
+        <div class="text-3xl mb-2">📁</div>
+        <p class="font-bold text-emerald-800 mb-1">วางไฟล์ PDF (ผังใหม่)</p>
+        <span id="labelNew" class="text-xs text-slate-500">หรือคลิกเพื่อเลือกไฟล์</span>
+        <input type="file" id="fileNew" accept=".pdf" class="hidden">
+      </div>
+    </div>
+
+    <button id="btnProcess" onclick="processPogs()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-md transition disabled:bg-slate-300">
+      ⚡ เริ่มประมวลผลและส่งเข้า Google Sheets
+    </button>
+
+    <div id="status" class="hidden text-center my-4 p-3 text-sm font-semibold rounded-lg"></div>
+
+    <!-- Results -->
+    <div id="resultArea" class="hidden mt-8 space-y-6">
+      
+      <!-- NEW -->
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-5">
+        <h2 class="text-lg font-bold text-amber-900 mb-3 flex items-center gap-2">
+          <span>🏷️</span> สินค้าตัวใหม่ (NEW) - ต้องทำป้ายราคา
+        </h2>
+        <div id="tableNew" class="overflow-x-auto"></div>
+      </div>
+
+      <!-- DELIST -->
+      <div class="bg-rose-50 border border-rose-200 rounded-xl p-5">
+        <h2 class="text-lg font-bold text-rose-900 mb-3 flex items-center gap-2">
+          <span>❌</span> สินค้าโดนถอด (DELIST) - ต้องเก็บออกจากชั้น
+        </h2>
+        <div id="tableDelist" class="overflow-x-auto"></div>
+      </div>
+
+      <!-- FACING CHANGED -->
+      <div class="bg-sky-50 border border-sky-200 rounded-xl p-5">
+        <h2 class="text-lg font-bold text-sky-900 mb-3 flex items-center gap-2">
+          <span>🔄</span> สินค้าปรับ Facing / ย้ายชั้นวาง
+        </h2>
+        <div id="tableFacing" class="overflow-x-auto"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // ⚠️ วาง URL ที่ได้จาก Google Apps Script ตรงนี้
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbzd3RjBAm4KB_ErurLHvI8gSCiZfTBdlYMd7tgMKRUr-BjH-LwYDKPgN93zXX5w2vZtvQ/exec";
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    let fileOldObj = null, fileNewObj = null;
+
+    // UI File Handlers
+    document.getElementById('dropOld').onclick = () => document.getElementById('fileOld').click();
+    document.getElementById('dropNew').onclick = () => document.getElementById('fileNew').click();
+
+    document.getElementById('fileOld').onchange = (e) => {
+      fileOldObj = e.target.files[0];
+      if(fileOldObj) document.getElementById('labelOld').innerText = fileOldObj.name;
+    };
+    document.getElementById('fileNew').onchange = (e) => {
+      fileNewObj = e.target.files[0];
+      if(fileNewObj) document.getElementById('labelNew').innerText = fileNewObj.name;
+    };
+
+    // อ่านข้อความจาก PDF
+    async function parsePdfData(file) {
+      const buffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({data: buffer}).promise;
+      let fullText = "";
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(s => s.str).join(" ");
+        fullText += pageText + "\n";
+      }
+
+      // Regex แกะบาร์โค้ด 13 หลัก, ชื่อสินค้า, Facing และ Status
+      const lines = fullText.split('\n');
+      const itemsMap = {};
+      const regex = /(\d{13})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(New))?/gi;
+
+      let match;
+      while ((match = regex.exec(fullText)) !== null) {
+        const upc = match[1];
+        itemsMap[upc] = {
+          upc: upc,
+          name: match[2].trim(),
+          facing: parseInt(match[3]),
+          status: match[7] ? "New" : "Existing"
+        };
+      }
+      return itemsMap;
+    }
+
+    async function processPogs() {
+      if (!fileOldObj || !fileNewObj) {
+        alert("กรุณาเลือกไฟล์ PDF ให้ครบทั้งผังเก่าและผังใหม่ครับ");
+        return;
+      }
+
+      const statusEl = document.getElementById('status');
+      statusEl.className = "text-center my-4 p-3 text-sm font-semibold rounded-lg bg-blue-100 text-blue-800 block";
+      statusEl.innerText = "⏳ กำลังอ่านข้อมูลจาก PDF...";
+
+      try {
+        const oldMap = await parsePdfData(fileOldObj);
+        const newMap = await parsePdfData(fileNewObj);
+
+        const oldArray = Object.values(oldMap);
+        const newArray = Object.values(newMap);
+
+        // เปรียบเทียบผลต่าง
+        const newItems = [];
+        const delistItems = [];
+        const facingItems = [];
+
+        // เช็กผังใหม่
+        for (let upc in newMap) {
+          const item = newMap[upc];
+          if (!oldMap[upc] || item.status === "New") {
+            newItems.push(item);
+          } else if (oldMap[upc].facing !== item.facing) {
+            facingItems.push({
+              upc: item.upc,
+              name: item.name,
+              oldFacing: oldMap[upc].facing,
+              newFacing: item.facing
+            });
+          }
+        }
+
+        // เช็กผังเก่าหาตัว Delist
+        for (let upc in oldMap) {
+          if (!newMap[upc]) {
+            delistItems.push(oldMap[upc]);
+          }
+        }
+
+        // แสดงผลบนหน้าเว็บ
+        renderTables(newItems, delistItems, facingItems);
+
+        // ส่งข้อมูลไป Google Sheets
+        statusEl.innerText = "⏳ กำลังบันทึกข้อมูลลง Google Sheets...";
+        fetch(GAS_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ oldItems: oldArray, newItems: newArray })
+        });
+
+        statusEl.className = "text-center my-4 p-3 text-sm font-semibold rounded-lg bg-emerald-100 text-emerald-800 block";
+        statusEl.innerText = "✅ ประมวลผลและส่งข้อมูลลง Google Sheets เรียบร้อยแล้ว!";
+
+      } catch (err) {
+        statusEl.className = "text-center my-4 p-3 text-sm font-semibold rounded-lg bg-rose-100 text-rose-800 block";
+        statusEl.innerText = "❌ เกิดข้อผิดพลาด: " + err.message;
+      }
+    }
+
+    function renderTables(newItems, delistItems, facingItems) {
+      document.getElementById('resultArea').classList.remove('hidden');
+
+      // ตาราง NEW
+      let htmlNew = `<table class="w-full text-left text-sm border-collapse bg-white rounded-lg overflow-hidden shadow-sm">
+        <thead class="bg-amber-100 text-amber-900"><tr><th class="p-2.5">UPC</th><th class="p-2.5">ชื่อสินค้า</th><th class="p-2.5 text-center">Facing</th></tr></thead><tbody>`;
+      if(newItems.length === 0) htmlNew += `<tr><td colspan="3" class="p-3 text-center text-slate-400">ไม่มีสินค้าใหม่</td></tr>`;
+      newItems.forEach(i => {
+        htmlNew += `<tr class="border-t border-slate-100"><td class="p-2.5 font-mono">${i.upc}</td><td class="p-2.5">${i.name}</td><td class="p-2.5 text-center font-bold text-amber-700">${i.facing}</td></tr>`;
+      });
+      document.getElementById('tableNew').innerHTML = htmlNew + `</tbody></table>`;
+
+      // ตาราง DELIST
+      let htmlDel = `<table class="w-full text-left text-sm border-collapse bg-white rounded-lg overflow-hidden shadow-sm">
+        <thead class="bg-rose-100 text-rose-900"><tr><th class="p-2.5">UPC</th><th class="p-2.5">ชื่อสินค้า</th></tr></thead><tbody>`;
+      if(delistItems.length === 0) htmlDel += `<tr><td colspan="2" class="p-3 text-center text-slate-400">ไม่มีสินค้าถูกถอดออก</td></tr>`;
+      delistItems.forEach(i => {
+        htmlDel += `<tr class="border-t border-slate-100"><td class="p-2.5 font-mono">${i.upc}</td><td class="p-2.5">${i.name}</td></tr>`;
+      });
+      document.getElementById('tableDelist').innerHTML = htmlDel + `</tbody></table>`;
+
+      // ตาราง FACING
+      let htmlFac = `<table class="w-full text-left text-sm border-collapse bg-white rounded-lg overflow-hidden shadow-sm">
+        <thead class="bg-sky-100 text-sky-900"><tr><th class="p-2.5">UPC</th><th class="p-2.5">ชื่อสินค้า</th><th class="p-2.5 text-center">Facing เดิม ➔ ใหม่</th></tr></thead><tbody>`;
+      if(facingItems.length === 0) htmlFac += `<tr><td colspan="3" class="p-3 text-center text-slate-400">ไม่มีการปรับ Facing</td></tr>`;
+      facingItems.forEach(i => {
+        htmlFac += `<tr class="border-t border-slate-100"><td class="p-2.5 font-mono">${i.upc}</td><td class="p-2.5">${i.name}</td><td class="p-2.5 text-center font-bold text-sky-700">${i.oldFacing} ➔ ${i.newFacing}</td></tr>`;
+      });
+      document.getElementById('tableFacing').innerHTML = htmlFac + `</tbody></table>`;
+    }
+  </script>
+</body>
+</html>
