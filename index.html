@@ -6,23 +6,35 @@
   <title>POG Comparison Tool</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <!-- เพิ่ม JSZip สำหรับแตกไฟล์ ZIP -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body class="bg-slate-100 min-h-screen p-4 md:p-8">
   <div class="max-w-5xl mx-auto bg-white p-6 md:p-8 rounded-2xl shadow-lg">
     <h1 class="text-2xl font-bold text-slate-800 mb-2">📊 ระบบเปรียบเทียบ Planogram (POG)</h1>
-    <p class="text-slate-500 mb-6 text-sm">วางไฟล์ PDF ผังเก่าและผังใหม่ ระบบจะประมวลผล แยกรายการ NEW / DELIST / ปรับ Facing ให้อัตโนมัติ</p>
+    <p class="text-slate-500 mb-6 text-sm">วางไฟล์ PDF (แยกผังเก่า/ใหม่) หรือ **วางไฟล์ .ZIP รวม** เพื่อให้ระบบแยกไฟล์อัตโนมัติ</p>
 
-    <!-- Drop Zones -->
+    <!-- ZIP Dropzone -->
+    <div id="dropZip" class="border-2 border-dashed border-purple-400 bg-purple-50/50 p-5 rounded-xl text-center cursor-pointer hover:bg-purple-50 transition mb-6">
+      <div class="text-3xl mb-1">📦</div>
+      <p class="font-bold text-purple-900">ลากไฟล์ .ZIP รวม (ที่มีทั้งผังเก่าและใหม่) มาวางตรงนี้</p>
+      <span id="labelZip" class="text-xs text-purple-600">ระบบจะทำการสแกน แตกไฟล์ และแยกผังเก่า/ผังใหม่อัตโนมัติ</span>
+      <input type="file" id="fileZip" accept=".zip" class="hidden">
+    </div>
+
+    <div class="text-center font-bold text-slate-400 my-2 text-xs">--- หรือเลือกวางทีละไฟล์ ---</div>
+
+    <!-- PDF Drop Zones -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-      <div id="dropOld" class="border-2 border-dashed border-blue-300 bg-blue-50/50 p-6 rounded-xl text-center cursor-pointer hover:bg-blue-50 transition">
-        <div class="text-3xl mb-2">📁</div>
+      <div id="dropOld" class="border-2 border-dashed border-blue-300 bg-blue-50/50 p-5 rounded-xl text-center cursor-pointer hover:bg-blue-50 transition">
+        <div class="text-2xl mb-1">📁</div>
         <p class="font-bold text-blue-800 mb-1">วางไฟล์ PDF (ผังเก่า)</p>
         <span id="labelOld" class="text-xs text-slate-500">หรือคลิกเพื่อเลือกไฟล์</span>
         <input type="file" id="fileOld" accept=".pdf" class="hidden">
       </div>
 
-      <div id="dropNew" class="border-2 border-dashed border-emerald-300 bg-emerald-50/50 p-6 rounded-xl text-center cursor-pointer hover:bg-emerald-50 transition">
-        <div class="text-3xl mb-2">📁</div>
+      <div id="dropNew" class="border-2 border-dashed border-emerald-300 bg-emerald-50/50 p-5 rounded-xl text-center cursor-pointer hover:bg-emerald-50 transition">
+        <div class="text-2xl mb-1">📁</div>
         <p class="font-bold text-emerald-800 mb-1">วางไฟล์ PDF (ผังใหม่)</p>
         <span id="labelNew" class="text-xs text-slate-500">หรือคลิกเพื่อเลือกไฟล์</span>
         <input type="file" id="fileNew" accept=".pdf" class="hidden">
@@ -37,7 +49,6 @@
 
     <!-- Results -->
     <div id="resultArea" class="hidden mt-8 space-y-6">
-      
       <!-- NEW -->
       <div class="bg-amber-50 border border-amber-200 rounded-xl p-5">
         <h2 class="text-lg font-bold text-amber-900 mb-3 flex items-center gap-2">
@@ -61,19 +72,19 @@
         </h2>
         <div id="tableFacing" class="overflow-x-auto"></div>
       </div>
-
     </div>
   </div>
 
   <script>
     // ⚠️ วาง URL ที่ได้จาก Google Apps Script ตรงนี้
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbzd3RjBAm4KB_ErurLHvI8gSCiZfTBdlYMd7tgMKRUr-BjH-LwYDKPgN93zXX5w2vZtvQ/exec";
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbxIHDZkllbINLasm7SLfJY3i7BgYMhzdroP8wQSl5Js13-67BWQqCHe04O3DFpPAc4reQ/exec";
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
     let fileOldObj = null, fileNewObj = null;
 
-    // UI File Handlers
+    // Element Handlers
+    document.getElementById('dropZip').onclick = () => document.getElementById('fileZip').click();
     document.getElementById('dropOld').onclick = () => document.getElementById('fileOld').click();
     document.getElementById('dropNew').onclick = () => document.getElementById('fileNew').click();
 
@@ -84,6 +95,60 @@
     document.getElementById('fileNew').onchange = (e) => {
       fileNewObj = e.target.files[0];
       if(fileNewObj) document.getElementById('labelNew').innerText = fileNewObj.name;
+    };
+
+    // จัดการไฟล์ ZIP
+    document.getElementById('fileZip').onchange = async (e) => {
+      const zipFile = e.target.files[0];
+      if (!zipFile) return;
+
+      document.getElementById('labelZip').innerText = "⏳ กำลังแตกไฟล์ ZIP...";
+
+      try {
+        const zip = await JSZip.loadAsync(zipFile);
+        const pdfEntries = [];
+
+        // ค้นหาเฉพาะไฟล์ .pdf ใน ZIP
+        for (const [path, entry] of Object.entries(zip.files)) {
+          if (!entry.dir && path.toLowerCase().endsWith('.pdf')) {
+            const blob = await entry.async("blob");
+            const filename = path.split('/').pop();
+            pdfEntries.push(new File([blob], filename, { type: "application/pdf" }));
+          }
+        }
+
+        if (pdfEntries.length < 2) {
+          alert("ไม่พบไฟล์ PDF 2 ไฟล์ใน ZIP กรุณาตรวจสอบไฟล์ ZIP อีกครั้งครับ");
+          document.getElementById('labelZip').innerText = "❌ ไฟล์ ZIP ต้องมี PDF อย่างน้อย 2 ไฟล์";
+          return;
+        }
+
+        // เรียงลำดับชื่อไฟล์ (เช่น เวอร์ชันเก่า 9.1 จะมาก่อน 9.2)
+        pdfEntries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+
+        let oldCandidate = pdfEntries[0];
+        let newCandidate = pdfEntries[1];
+
+        // ตรวจเช็กคีย์เวิร์ดในชื่อไฟล์
+        const isOldKey = (str) => /old|เก่า|v1|prev|pog[_\s]*9\.1/i.test(str);
+        const isNewKey = (str) => /new|ใหม่|v2|next|pog[_\s]*9\.2/i.test(str);
+
+        if (isNewKey(pdfEntries[0].name) || isOldKey(pdfEntries[1].name)) {
+          oldCandidate = pdfEntries[1];
+          newCandidate = pdfEntries[0];
+        }
+
+        fileOldObj = oldCandidate;
+        fileNewObj = newCandidate;
+
+        document.getElementById('labelOld').innerText = "📦 " + fileOldObj.name;
+        document.getElementById('labelNew').innerText = "📦 " + fileNewObj.name;
+        document.getElementById('labelZip').innerText = `✅ แยกสำเร็จ: [ผังเก่า: ${fileOldObj.name}] และ [ผังใหม่: ${fileNewObj.name}]`;
+
+      } catch (err) {
+        alert("ไม่สามารถอ่านไฟล์ ZIP ได้: " + err.message);
+        document.getElementById('labelZip').innerText = "❌ อ่านไฟล์ ZIP ไม่สำเร็จ";
+      }
     };
 
     // อ่านข้อความจาก PDF
@@ -99,8 +164,6 @@
         fullText += pageText + "\n";
       }
 
-      // Regex แกะบาร์โค้ด 13 หลัก, ชื่อสินค้า, Facing และ Status
-      const lines = fullText.split('\n');
       const itemsMap = {};
       const regex = /(\d{13})\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(New))?/gi;
 
@@ -119,13 +182,13 @@
 
     async function processPogs() {
       if (!fileOldObj || !fileNewObj) {
-        alert("กรุณาเลือกไฟล์ PDF ให้ครบทั้งผังเก่าและผังใหม่ครับ");
+        alert("กรุณาเลือกไฟล์ PDF หรือวางไฟล์ ZIP ให้เรียบร้อยก่อนครับ");
         return;
       }
 
       const statusEl = document.getElementById('status');
       statusEl.className = "text-center my-4 p-3 text-sm font-semibold rounded-lg bg-blue-100 text-blue-800 block";
-      statusEl.innerText = "⏳ กำลังอ่านข้อมูลจาก PDF...";
+      statusEl.innerText = "⏳ กำลังอ่านข้อมูลจาก PDF ทั้ง 2 ไฟล์...";
 
       try {
         const oldMap = await parsePdfData(fileOldObj);
@@ -134,7 +197,6 @@
         const oldArray = Object.values(oldMap);
         const newArray = Object.values(newMap);
 
-        // เปรียบเทียบผลต่าง
         const newItems = [];
         const delistItems = [];
         const facingItems = [];
@@ -161,10 +223,9 @@
           }
         }
 
-        // แสดงผลบนหน้าเว็บ
         renderTables(newItems, delistItems, facingItems);
 
-        // ส่งข้อมูลไป Google Sheets
+        // ส่งลง Google Sheets
         statusEl.innerText = "⏳ กำลังบันทึกข้อมูลลง Google Sheets...";
         fetch(GAS_URL, {
           method: 'POST',
@@ -174,7 +235,7 @@
         });
 
         statusEl.className = "text-center my-4 p-3 text-sm font-semibold rounded-lg bg-emerald-100 text-emerald-800 block";
-        statusEl.innerText = "✅ ประมวลผลและส่งข้อมูลลง Google Sheets เรียบร้อยแล้ว!";
+        statusEl.innerText = "✅ ประมวลผลและบันทึกลง Google Sheets เรียบร้อยแล้ว!";
 
       } catch (err) {
         statusEl.className = "text-center my-4 p-3 text-sm font-semibold rounded-lg bg-rose-100 text-rose-800 block";
